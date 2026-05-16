@@ -23,7 +23,7 @@
     "linux-x64-musl": {
       "file": "node-v22.22.0-linux-x64-musl.tar.gz",
       "url": "https://unofficial-builds.nodejs.org/download/release/v22.22.0/node-v22.22.0-linux-x64-musl.tar.gz",
-      "sha256": "5618c83f81bdf51ac7fdfdf5bd6e179c15294b10ae4af13c028a27d54a0bd780",
+      "sha256": "c4802f0941790592249fbd01e9f0e4313b99aebb21d88adc2dba6933bdc3dc48",
       "source": "nodejs-unofficial-builds",
       "note": "Node-hosted unofficial musl build; verify release policy before public publish."
     },
