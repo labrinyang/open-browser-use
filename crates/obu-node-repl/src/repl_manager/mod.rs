@@ -213,11 +213,12 @@ impl JsRuntimeManager {
     }
 
     /// Read-only browser-use readiness status for MCP clients.
-    pub fn browser_status(&self) -> Result<Value> {
+    pub async fn browser_status(&self) -> Result<Value> {
         if self.options.dynamic_backend_discovery {
             self.refresh_backend_inventory();
         }
         let inventory = self.backend_inventory();
+        self.sync_backend_inventory_to_kernel(&inventory).await?;
         let (sdk_bootstrap, sdk_bootstrap_detail) = self.sdk_bootstrap_status();
         let doctor_hint = if inventory.backends.is_empty() {
             "obu doctor browser --repair"
@@ -458,6 +459,30 @@ impl JsRuntimeManager {
                 .send(&json!({ "type": "add_module_dir", "path": dir }))
                 .await?;
         }
+        Ok(())
+    }
+
+    async fn sync_backend_inventory_to_kernel(&self, inventory: &BackendInventory) -> Result<()> {
+        let Some((native_pipe, writer)) = self.generation.lock().await.as_ref().map(|generation| {
+            (
+                generation.native_pipe.clone(),
+                generation.kernel_stdin.clone(),
+            )
+        }) else {
+            return Ok(());
+        };
+
+        native_pipe.set_capability_tokens_by_path(inventory.auth_tokens.clone());
+        writer
+            .lock()
+            .await
+            .send(&json!({
+                "type": "set_backend_inventory",
+                "backends": inventory.backends,
+                "backend_diagnostics": inventory.diagnostics,
+            }))
+            .await
+            .context("send backend inventory to kernel")?;
         Ok(())
     }
 

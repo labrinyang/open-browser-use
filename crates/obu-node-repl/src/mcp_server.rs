@@ -413,7 +413,7 @@ impl ObuServer {
         arguments: Option<rmcp::model::JsonObject>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
         let _args: JsResetArgs = decode_args(arguments)?;
-        let status = self.runtime.browser_status().map_err(|error| {
+        let status = self.runtime.browser_status().await.map_err(|error| {
             ErrorData::internal_error(format!("failed to compute browser status: {error}"), None)
         })?;
         Ok(structured_result(

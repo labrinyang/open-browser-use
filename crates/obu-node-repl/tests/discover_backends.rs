@@ -52,7 +52,7 @@ async fn browser_status_reports_missing_sdk_and_no_backend() {
         .await
         .unwrap();
 
-    let status = manager.browser_status().unwrap();
+    let status = manager.browser_status().await.unwrap();
 
     assert_eq!(status["sdk_bootstrap"], json!("missing"));
     assert_eq!(status["backends"], json!([]));
@@ -80,7 +80,7 @@ async fn browser_status_reports_untrusted_sdk_without_backend_secrets() {
     );
     let manager = JsRuntimeManager::new(options).await.unwrap();
 
-    let status = manager.browser_status().unwrap();
+    let status = manager.browser_status().await.unwrap();
 
     assert_eq!(status["sdk_bootstrap"], json!("untrusted"));
     assert_eq!(status["backends"][0]["type"], json!("webextension"));
@@ -305,6 +305,81 @@ async fn js_reset_refreshes_runtime_descriptor_inventory() {
         second.result,
         json!(
             std::fs::canonicalize(&second_socket)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        )
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_status_refreshes_live_kernel_descriptor_inventory() {
+    let _env_guard = ENV_LOCK.lock().await;
+    let runtime_dir = tempfile::tempdir().unwrap();
+    make_runtime_root_owner_only(runtime_dir.path());
+    let _runtime = EnvVarGuard::set("OBU_RUNTIME_DIR", &runtime_dir.path().to_string_lossy());
+    let _backends = EnvVarGuard::remove("OBU_BACKENDS");
+    let _extra = EnvVarGuard::remove("OBU_EXTRA_BACKENDS");
+
+    let options = ManagerOptions::from_cli(&Cli {
+        verbosity: 0,
+        session_id: Some("descriptor-session".into()),
+        working_dir: None,
+        command: cli::Command::Mcp {
+            transport: cli::McpTransport::Stdio,
+        },
+    })
+    .unwrap();
+    assert!(options.backends.is_empty());
+
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+    manager.boot().await.unwrap();
+    let before = manager
+        .exec("globalThis.obuRepl.discoverBackends()", None)
+        .await
+        .unwrap();
+    assert_eq!(before.result, json!([]));
+
+    let descriptor_dir = runtime_dir.path().join("webextension");
+    std::fs::create_dir_all(&descriptor_dir).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&descriptor_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let descriptor_path = descriptor_dir.join("chrome.json");
+    let socket_path = runtime_dir.path().join("live.sock");
+    let server = start_descriptor_server(
+        &socket_path,
+        "live-token",
+        json!({
+            "type": "webextension",
+            "name": "chrome",
+            "metadata": {
+                "backend": {
+                    "browser_kind": "chrome",
+                    "extension_id": "ext-id",
+                    "extension_version": "0.1.0",
+                    "extension_instance_id": "instance-id"
+                }
+            },
+            "capabilities": {}
+        }),
+    );
+    write_descriptor(&descriptor_path, &socket_path, "live-token");
+
+    let status = manager.browser_status().await.unwrap();
+    assert_eq!(status["backends"][0]["type"], json!("webextension"));
+    server.join().unwrap();
+
+    let after = manager
+        .exec("globalThis.obuRepl.discoverBackends()[0].socketPath", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        after.result,
+        json!(
+            std::fs::canonicalize(&socket_path)
                 .unwrap()
                 .to_string_lossy()
                 .to_string()

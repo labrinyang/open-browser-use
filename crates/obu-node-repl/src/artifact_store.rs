@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
-use obu_wire::runtime_dir::resolve_runtime_dir;
+use obu_wire::runtime_dir::{ensure_owner_only_dir, resolve_runtime_dir};
 use rmcp::model::{RawResource, Resource, ResourceContents};
 use serde::Serialize;
 use uuid::Uuid;
@@ -49,15 +49,25 @@ pub struct ArtifactStore {
 impl ArtifactStore {
     /// Create a per-session artifact store.
     pub fn new(session_id: &str) -> Result<Self> {
-        let root = resolve_runtime_dir()
-            .join("mcp-artifacts")
-            .join(sanitize_path_component(session_id));
-        Self::new_with_root(root)
+        Self::new_under_runtime(&resolve_runtime_dir(), session_id)
     }
 
     #[cfg(test)]
     pub(crate) fn new_at(root: &Path, session_id: &str) -> Result<Self> {
         Self::new_with_root(root.join(sanitize_path_component(session_id)))
+    }
+
+    fn new_under_runtime(runtime_root: &Path, session_id: &str) -> Result<Self> {
+        let artifact_root = runtime_root.join("mcp-artifacts");
+        ensure_owner_only_dir(runtime_root)
+            .with_context(|| format!("ensure owner-only runtime dir {}", runtime_root.display()))?;
+        ensure_owner_only_dir(&artifact_root).with_context(|| {
+            format!(
+                "ensure owner-only artifact root {}",
+                artifact_root.display()
+            )
+        })?;
+        Self::new_with_root(artifact_root.join(sanitize_path_component(session_id)))
     }
 
     fn new_with_root(root: PathBuf) -> Result<Self> {
@@ -265,6 +275,44 @@ mod tests {
                 "mimeType": "image/png",
                 "blob": "cG5nLWJ5dGVz"
             })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_store_secures_runtime_and_artifact_roots() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let runtime_root = dir.path().join("runtime");
+        let artifact_root = runtime_root.join("mcp-artifacts");
+        let session_root = artifact_root.join("test-session");
+
+        let _store = ArtifactStore::new_under_runtime(&runtime_root, "test/session").unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&runtime_root)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&artifact_root)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&session_root)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
         );
     }
 }
