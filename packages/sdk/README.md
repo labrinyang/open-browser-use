@@ -16,8 +16,7 @@ const browser = await agent.browsers.get("chrome");
 const tab = await browser.tabs.create("https://example.com");
 await tab.attach();
 await tab.locator("h1").click();
-const shot = await tab.screenshot({ type: "jpeg", quality: 60, fullPage: false });
-display({ __obuImage: true, mime_type: shot.mime_type, data: shot.data_base64 });
+await tab.screenshotForModel({ clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } });
 ```
 
 Backend discovery is lazy. `setupObuRuntime()` installs `agent` without opening
@@ -40,12 +39,16 @@ Call `agent.help()` for the live API table. Main layers:
 | `agent.browsers.get(kind)` | `getInfo` |
 | `agent.browsers.diagnostics()` | Local runtime descriptor diagnostics |
 | `browser.diagnostics/lifecycleDiagnostics/capabilities` | `getInfo` metadata |
+| `browser.ensureReady()` | `getInfo` readiness summary |
 | `browser.deliverables()` | `getTabs`, `getInfo`, `claimUserTab` |
 | `browser.clearLifecycleDiagnostics()` | `clearLifecycleDiagnostics` |
+| `browser.finishTurn({ keep })` | `finalizeTabs`, `turnEnded` |
 | `browser.tabs.create(urlOrOptions)/list/get` | `createTab`, `getTabs` |
 | `browser.user.openTabs/history/claimTab` | `getUserTabs`, `getUserHistory`, `claimUserTab` |
 | `tab.attach/detach` | `attach`, `detach` |
 | `tab.goto/back/forward/reload/waitForURL/waitForLoadState/screenshot` | `tab_*` |
+| `tab.evaluate()` / `tab.snapshotText()` | capped `executeCdp` evaluation |
+| `tab.screenshotForModel()` | `tab_screenshot` plus MCP image emission when available |
 | `tab.waitForEvent("filechooser" \| "download")` | `playwright_wait_for_*` |
 | `tab.locator(selector)` / `locator.download_media()` | `playwright_locator_*` |
 | `tab.frameLocator(selector)` | Playwright selector scope |
@@ -59,11 +62,12 @@ Call `agent.help()` for the live API table. Main layers:
 `browser.tabs.create()` accepts either a URL string or `{ url }`. With no URL it
 creates `about:blank`, not Chrome's extension-restricted new-tab page.
 `tab.screenshot()` accepts the Playwright-shaped subset `{ type, quality, clip,
-fullPage }`; use `type: "jpeg"`, `quality`, and `clip.scale < 1` when the image
-needs to fit inside an LLM response.
-Avoid returning or logging raw screenshot/content-export base64. The MCP `js`
-tool returns structured data to the model, so large payloads should be clipped,
-compressed, summarized, or exposed through a future resource-backed path.
+fullPage }`. Prefer `tab.screenshotForModel()` for agent observations; it
+defaults to compressed JPEG and emits an MCP image resource when the kernel
+supports `nodeRepl.emitImage`. Avoid returning or logging raw
+screenshot/content-export base64. The MCP `js` tool caps large text/JSON fields
+and spills image-like base64 payloads to resources, but compact summaries remain
+the intended path.
 
 Rich clipboard `read()` / `write()` use Codex-shaped multi-MIME clipboard items
 on WebExtension sessions through the target-page virtual clipboard. Cookies,
