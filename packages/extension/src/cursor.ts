@@ -59,6 +59,16 @@ const RESTING_ROTATION_DEG = -44;
 const ARRIVAL_TIMEOUT_MS = 650;
 const INPUT_BYPASS_DEFAULT_MS = 450;
 const INPUT_BYPASS_MAX_MS = 1_000;
+const TAKEOVER_OVERLAY_BLUR = "blur(1.35px) saturate(1.06)";
+const TAKEOVER_OVERLAY_BACKGROUND = [
+  "radial-gradient(circle at 18% 24%, rgba(125, 211, 252, 0.34) 0 1px, transparent 1.9px)",
+  "radial-gradient(circle at 76% 18%, rgba(191, 219, 254, 0.24) 0 1.15px, transparent 2.3px)",
+  "radial-gradient(circle at 34% 78%, rgba(56, 189, 248, 0.22) 0 1px, transparent 2px)",
+  "radial-gradient(circle at 84% 70%, rgba(147, 197, 253, 0.2) 0 1.35px, transparent 2.4px)",
+  "linear-gradient(118deg, rgba(14, 165, 233, 0.1), rgba(37, 99, 235, 0.16) 46%, rgba(6, 182, 212, 0.1))",
+].join(", ");
+const TAKEOVER_OVERLAY_BACKGROUND_SIZE = "170px 170px, 230px 230px, 290px 290px, 360px 360px, 100% 100%";
+const TAKEOVER_OVERLAY_BACKGROUND_POSITION = "0 0, 44px 28px, 16px 78px, 92px 18px, 0 0";
 const REDUCED_MOTION = matchMediaSafe("(prefers-reduced-motion: reduce)");
 const INSTALL_KEY = "__OBU_CURSOR_CONTENT_SCRIPT_INSTALLED__";
 const SCRIPT_EVENT = "__OBU_CURSOR_MESSAGE__";
@@ -151,7 +161,7 @@ function handleCursorMessage(message: unknown, sendResponse?: (response?: unknow
 
 function setTakeoverState(message: TakeoverStateMessage): void {
   activeTakeover = message.active;
-  lockInputs = Boolean(message.lockInputs && message.active);
+  lockInputs = message.active && message.lockInputs !== false;
   lastSessionId = message.sessionId ?? lastSessionId;
   lastTurnId = message.turnId ?? lastTurnId;
   if (!message.active) {
@@ -279,14 +289,24 @@ function ensureCursor(): void {
   host.style.contain = "layout style paint";
   const shadow = host.attachShadow({ mode: "closed" });
 
+  const style = document.createElement("style");
+  style.textContent = takeoverStyleSheet();
+
   overlay = document.createElement("div");
   overlay.style.position = "fixed";
   overlay.style.inset = "0";
   overlay.style.opacity = "0";
-  overlay.style.background = "rgba(37, 99, 235, 0.105)";
-  overlay.style.backdropFilter = "blur(1.5px) saturate(1.03)";
+  overlay.style.background = TAKEOVER_OVERLAY_BACKGROUND;
+  overlay.style.backgroundSize = TAKEOVER_OVERLAY_BACKGROUND_SIZE;
+  overlay.style.backgroundPosition = TAKEOVER_OVERLAY_BACKGROUND_POSITION;
+  overlay.style.backgroundBlendMode = "screen, screen, screen, screen, normal";
+  overlay.style.backdropFilter = TAKEOVER_OVERLAY_BLUR;
+  (overlay.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = TAKEOVER_OVERLAY_BLUR;
+  overlay.style.boxShadow = "inset 0 0 0 1px rgba(125, 211, 252, 0.16), inset 0 0 48px rgba(37, 99, 235, 0.18)";
   overlay.style.transition = "opacity 160ms ease-out";
   overlay.style.pointerEvents = "none";
+  overlay.style.willChange = REDUCED_MOTION ? "opacity" : "opacity, background-position";
+  overlay.style.animation = REDUCED_MOTION ? "none" : "obu-takeover-particles 14s linear infinite";
 
   pulseLayer = document.createElement("div");
   pulseLayer.style.position = "fixed";
@@ -314,11 +334,24 @@ function ensureCursor(): void {
   cursorGlyph.style.willChange = "transform";
   cursor.append(cursorGlyph);
 
-  shadow.append(overlay, pulseLayer, cursor);
+  shadow.append(style, overlay, pulseLayer, cursor);
   document.documentElement.append(host);
   updateOverlay();
   updateInputLock();
   renderCursor(currentPoint, RESTING_ROTATION_DEG, 1, 1);
+}
+
+function takeoverStyleSheet(): string {
+  return `
+    @keyframes obu-takeover-particles {
+      from {
+        background-position: ${TAKEOVER_OVERLAY_BACKGROUND_POSITION};
+      }
+      to {
+        background-position: 170px 70px, -90px 118px, 116px -96px, -128px -82px, 0 0;
+      }
+    }
+  `;
 }
 
 function updateOverlay(): void {
