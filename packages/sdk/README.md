@@ -16,7 +16,8 @@ const browser = await agent.browsers.get("chrome");
 const tab = await browser.tabs.create("https://example.com");
 await tab.attach();
 await tab.locator("h1").click();
-display(await tab.content.export({ format: "png" }));
+const shot = await tab.screenshot({ type: "jpeg", quality: 60, fullPage: false });
+display({ __obuImage: true, mime_type: shot.mime_type, data: shot.data_base64 });
 ```
 
 Backend discovery is lazy. `setupObuRuntime()` installs `agent` without opening
@@ -60,6 +61,9 @@ creates `about:blank`, not Chrome's extension-restricted new-tab page.
 `tab.screenshot()` accepts the Playwright-shaped subset `{ type, quality, clip,
 fullPage }`; use `type: "jpeg"`, `quality`, and `clip.scale < 1` when the image
 needs to fit inside an LLM response.
+Avoid returning or logging raw screenshot/content-export base64. The MCP `js`
+tool returns structured data to the model, so large payloads should be clipped,
+compressed, summarized, or exposed through a future resource-backed path.
 
 Rich clipboard `read()` / `write()` use Codex-shaped multi-MIME clipboard items
 on WebExtension sessions through the target-page virtual clipboard. Cookies,

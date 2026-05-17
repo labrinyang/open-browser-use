@@ -37,6 +37,12 @@ The structured result contains:
 - `result` — the JSON-serializable value of the last expression, or `null`.
 - `duration_ms` — kernel-measured execution time.
 - `displays` — values emitted by `display(value)`.
+- `error` — JavaScript user-code error message when the cell fails, otherwise
+  `null`. JavaScript errors are tool results with `isError: true`; invalid MCP
+  arguments, timeouts, and kernel transport failures are protocol errors.
+
+The MCP text `content` is only a short status summary. Read
+`structuredContent` for the actual data.
 
 ## Globals
 
@@ -63,6 +69,16 @@ The structured result contains:
 - `agent` — installed when trusted `@open-browser-use/sdk` is discoverable. Use
   `await agent.browsers.get(kind)` to connect lazily.
 - `help()` — prints the SDK API table.
+
+## Token budget
+
+Keep `stdout`, final expression values, and `display()` payloads small. Do not
+return raw screenshot, HTML, PDF, or base64 values as the final expression and do
+not `console.log` them. For screenshots, prefer clipped/compressed JPEG output:
+`{ type: "jpeg", quality: 50..70, fullPage: false, clip: { ..., scale: 0.5 } }`.
+Use `display({ __obuImage: true, mime_type, data })` only after reducing the
+image payload. Text/JSON `display()` frames can stream as progress, but they are
+also included in the final result.
 
 ## Examples
 

@@ -157,6 +157,22 @@ sequenceDiagram
   NR-->>Agent: MCP structured result
 ```
 
+Agent-facing MCP browser-use details live in
+[`docs/agent-browser-mcp-usage.md`](agent-browser-mcp-usage.md). The important
+contract is: `tools/list` advertises `outputSchema`; `tools/call js` returns a
+short text `content` plus the real `structuredContent`; JavaScript user-code
+failures are tool results with `isError: true`; transport, timeout, and invalid
+argument failures remain protocol errors.
+
+Token-sensitive payloads are concentrated at the MCP boundary:
+
+- `stdout`, final expression `result`, and `displays` are all returned in the
+  final structured result.
+- Text/JSON `display()` frames can stream as progress when the client provides a
+  progress token, but they are still retained in final `displays`.
+- Screenshot, PNG/PDF export, HTML export, and image displays currently inline
+  base64 payloads; there is no resource-backed spill path yet.
+
 CDP 后端当前职责：
 
 - `resolve_browser_ws()` 从 HTTP/WS CDP URL 找到 browser websocket endpoint。
