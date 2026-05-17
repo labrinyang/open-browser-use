@@ -475,8 +475,15 @@ function quadraticTangent(start: Point, control: Point, end: Point, t: number): 
 
 function cursorSvgDataUrl(): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-    <path d="M5.4 3.8 26.2 14.3c1.6.8 1.4 3.2-.3 3.7l-8.2 2.4-3.9 7.8c-.8 1.6-3.2 1.3-3.6-.5L5.4 3.8Z" fill="rgba(14, 165, 233, 0.94)" stroke="rgba(248, 250, 252, 0.96)" stroke-width="3.2" stroke-linejoin="round"/>
-    <path d="M7.5 6.3 24.3 15l-8 2.3-3.8 7.5L7.5 6.3Z" fill="rgba(15, 23, 42, 0.96)"/>
+    <g fill="#ffc400" stroke="#f2a900" stroke-width=".6" stroke-linejoin="round">
+      <path d="M8.7 7.1 10.4 1.4c.2-.8 1.3-.8 1.6 0l2 5.6 3.1-2.1c.7-.5 1.5.3 1.1 1l-2.1 4.7a10.3 10.3 0 0 0-6.7-.1L6.5 6.3c-.4-.7.4-1.5 1.1-1l1.1 1.8Z"/>
+      <path d="M1.7 6.8c.3-.5.9-.7 1.4-.4l5.3 3.1c.5.3.6.9.3 1.4-.3.5-.9.7-1.4.4L2 8.2c-.5-.3-.6-.9-.3-1.4Z"/>
+      <path d="M.9 12.5c.1-.6.6-1 1.2-.9l5.8.7c.6.1 1 .6.9 1.2-.1.6-.6 1-1.2.9l-5.8-.7c-.6-.1-1-.6-.9-1.2Z"/>
+      <path d="M20.7 3.1c.5.3.7.9.4 1.4l-3.1 5c-.3.5-.9.7-1.4.4-.5-.3-.7-.9-.4-1.4l3.1-5c.3-.5.9-.7 1.4-.4Z"/>
+    </g>
+    <path d="M6.5 8.1c-.2-1.4 1.3-2.5 2.6-1.8l21.2 11.3c1.5.8 1.3 3-.3 3.5l-6.7 2 4.6 4.7c.8.9.8 2.2-.1 3l-2.6 2.4c-.9.8-2.3.7-3-.2l-4.6-5.8-3.5 5.2c-1 1.5-3.3 1-3.6-.8L6.5 8.1Z" fill="#0b1118"/>
+    <path d="M9 9.6 27.8 19.7l-8.7 2.6 6.3 6.5-1.5 1.4-6.6-8.3-4.8 7.3L9 9.6Z" fill="#f8fbff"/>
+    <path d="M9.6 10.8 12.3 27 17.1 20l6.2 7.8" fill="none" stroke="#dfe7ef" stroke-width=".9" stroke-linecap="round" stroke-linejoin="round" opacity=".72"/>
   </svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 }
