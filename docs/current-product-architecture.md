@@ -417,7 +417,7 @@ sequenceDiagram
 | SDK 层 | 典型入口 | Guard 分类与上下文 |
 | --- | --- | --- |
 | `Browsers.get()` | `agent.browsers.get("chrome")` | 不直接触发 browser command；只做 backend selection、native-pipe connect、`getInfo`。 |
-| `BrowserTabs` | `browser.tabs.create({ url })` | `create()` 是 `target-url`，用目标 URL 调 `checkNavigation`；`list()` 直接发 `GET_TABS`，host 侧 always-allowed；`get()` 只创建本地 `Tab` handle。 |
+| `BrowserTabs` | `browser.tabs.create("https://...")` 或 `browser.tabs.create({ url })` | `create()` 是 `target-url`，用目标 URL 调 `checkNavigation`；无 URL 时创建 `about:blank`，避免落到扩展不可访问的 `chrome://newtab/`；`list()` 直接发 `GET_TABS`，host 侧 always-allowed；`get()` 只创建本地 `Tab` handle。 |
 | `BrowserUser` | `openTabs()`、`history()`、`claimTab()` | `GET_USER_TABS`、`GET_USER_HISTORY`、`CLAIM_USER_TAB` 是 `history`，走 `checkHistory`。 |
 | `Tab` | `goto/reload/back/forward/url/title/screenshot/close` | `goto/waitForURL` 是 `target-url`；多数 tab-local 方法是 `current-origin`，必要时先发 `TAB_URL` 取当前 URL。 |
 | `Locator` / `FrameLocator` | `click/fill/press/readAll/screenshot` | 多数 locator 命令是 `current-origin`；`downloadMedia` 是 `download`；`#send` 会按 `needsCurrentUrl()` 决定是否读取 `TAB_URL`。 |

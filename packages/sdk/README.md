@@ -13,9 +13,8 @@ through `import.meta.__obuNativePipe` on the trusted module. It does not read
 
 ```js
 const browser = await agent.browsers.get("chrome");
-const tab = await browser.tabs.create();
+const tab = await browser.tabs.create("https://example.com");
 await tab.attach();
-await tab.goto("https://example.com");
 await tab.locator("h1").click();
 display(await tab.content.export({ format: "png" }));
 ```
@@ -42,10 +41,10 @@ Call `agent.help()` for the live API table. Main layers:
 | `browser.diagnostics/lifecycleDiagnostics/capabilities` | `getInfo` metadata |
 | `browser.deliverables()` | `getTabs`, `getInfo`, `claimUserTab` |
 | `browser.clearLifecycleDiagnostics()` | `clearLifecycleDiagnostics` |
-| `browser.tabs.create/list/get` | `createTab`, `getTabs` |
+| `browser.tabs.create(urlOrOptions)/list/get` | `createTab`, `getTabs` |
 | `browser.user.openTabs/history/claimTab` | `getUserTabs`, `getUserHistory`, `claimUserTab` |
 | `tab.attach/detach` | `attach`, `detach` |
-| `tab.goto/back/forward/reload/waitForURL/waitForLoadState` | `tab_*` |
+| `tab.goto/back/forward/reload/waitForURL/waitForLoadState/screenshot` | `tab_*` |
 | `tab.waitForEvent("filechooser" \| "download")` | `playwright_wait_for_*` |
 | `tab.locator(selector)` / `locator.download_media()` | `playwright_locator_*` |
 | `tab.frameLocator(selector)` | Playwright selector scope |
@@ -55,6 +54,12 @@ Call `agent.help()` for the live API table. Main layers:
 | `tab.dom_cua.*` | `dom_cua_*` |
 | `tab.dev.cdp(method, params)` | `executeCdp` |
 | `display(value)` | Delegates to the kernel-locked display global |
+
+`browser.tabs.create()` accepts either a URL string or `{ url }`. With no URL it
+creates `about:blank`, not Chrome's extension-restricted new-tab page.
+`tab.screenshot()` accepts the Playwright-shaped subset `{ type, quality, clip,
+fullPage }`; use `type: "jpeg"`, `quality`, and `clip.scale < 1` when the image
+needs to fit inside an LLM response.
 
 Rich clipboard `read()` / `write()` use Codex-shaped multi-MIME clipboard items
 on WebExtension sessions through the target-page virtual clipboard. Cookies,

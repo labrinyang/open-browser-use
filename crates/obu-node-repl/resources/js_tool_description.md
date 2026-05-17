@@ -5,7 +5,8 @@ module imports, filesystem inspection, data shaping, or repeated probing. Each
 call runs as a fresh ES module in the same Node child. Top-level `let`/`const`
 bindings from successful calls are carried forward by the kernel, so you can
 define helper functions once and reuse them later. `js_reset` clears that state
-by respawning the child.
+by respawning the child and refreshes runtime browser descriptors before the
+new child starts.
 
 When `@open-browser-use/sdk` is installed in a trusted module directory, the kernel
 automatically installs the global `agent`. Use `agent.browsers.get("cdp")` or
@@ -13,6 +14,12 @@ automatically installs the global `agent`. Use `agent.browsers.get("cdp")` or
 open-browser-use SDK. This is the browser automation surface: do not ask for separate
 `click`, `type`, `screenshot`, or `scroll` tools. Write JavaScript with
 `agent`, `tab`, `locator`, and `tab.cua` instead.
+`agent.browsers.get(...)` is async, so always write
+`const browser = await agent.browsers.get("chrome")`. `browser.tabs.create()`
+accepts either a URL string or `{ url }`; with no URL it creates `about:blank`.
+The WebExtension backend cannot drive `file://` pages. Serve local files over
+HTTP, for example `python3 -m http.server`, and navigate to
+`http://127.0.0.1:...`.
 
 ## Arguments
 
@@ -45,6 +52,10 @@ The structured result contains:
 - `nodeRepl.setResponseMeta(value)` — attach response metadata.
 - `nodeRepl.write(string)` — append low-level text output. Prefer `display`
   for user-facing progress.
+- `process` and `node:process` are intentionally unavailable to user code.
+  Filesystem reads are allowed for imports and inspection; filesystem writes are
+  blocked by Node's permission model unless the host launch explicitly allows
+  them.
 - `obuRepl.discoverBackends()` — trusted SDK backend inventory seeded by the
   Rust parent from `OBU_BACKENDS`.
 - `obuRepl.discoverBackendDiagnostics()` — ignored runtime backend descriptor
@@ -60,7 +71,8 @@ const browser = await agent.browsers.get("cdp");
 const tab = await browser.tabs.create("https://example.com");
 await tab.attach();
 await tab.locator("h1").click();
-await tab.content.export({ format: "png" });
+const shot = await tab.screenshot({ type: "jpeg", quality: 60, clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } });
+display({ __obuImage: true, mime_type: shot.mime_type, data: shot.data_base64 });
 ```
 
 ```js
