@@ -170,8 +170,8 @@ Token-sensitive payloads are concentrated at the MCP boundary:
   final structured result.
 - Text/JSON `display()` frames can stream as progress when the client provides a
   progress token, but they are still retained in final `displays`.
-- Screenshot, PNG/PDF export, HTML export, and image displays currently inline
-  base64 payloads; there is no resource-backed spill path yet.
+- Image displays and oversized base64 payloads with MIME metadata spill to
+  per-session MCP resources; clients can fetch them with `resources/read`.
 
 CDP 后端当前职责：
 

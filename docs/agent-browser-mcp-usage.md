@@ -4,22 +4,28 @@ This document is the agent-facing contract for driving open-browser-use through
 the MCP `js` tool. It exists to keep LLMs on the intended path and to make token
 costs visible before they turn into failed tool calls.
 
-Reference points checked against the MCP specification:
+For the broader system-level integration analysis, including current bottlenecks
+and recommended implementation priorities, see
+[`mcp-browser-integration-analysis.md`](mcp-browser-integration-analysis.md).
+
+Reference points checked against the latest published MCP specification at the
+time of writing (`2025-11-25`):
 
 - Tool results may include `structuredContent`, and tools that advertise an
   `outputSchema` should return structured data matching that schema:
-  https://modelcontextprotocol.io/specification/2025-06-18/server/tools
+  https://modelcontextprotocol.io/specification/2025-11-25/server/tools
 - Long-running tools can stream progress with `notifications/progress` when the
   client supplies a progress token:
-  https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/progress
+  https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/progress
 - Large artifacts should be exposed as resources or resource links instead of
   inlining the full payload in a tool result:
-  https://modelcontextprotocol.io/specification/2025-06-18/server/resources
+  https://modelcontextprotocol.io/specification/2025-11-25/server/resources
 
 ## Call Chain
 
-1. The MCP client calls `tools/list` and receives `js`, `js_reset`, and
-   `js_add_module_dir`, each with an input schema and output schema.
+1. The MCP client calls `tools/list` and receives `js`, `browser_status`,
+   `js_reset`, and `js_add_module_dir`, each with an input schema and output
+   schema.
 2. The client calls `tools/call` for `js` with JavaScript `source` and optional
    `timeout_ms`.
 3. `crates/obu-node-repl/src/mcp_server.rs` validates arguments. If the request
@@ -36,7 +42,9 @@ Reference points checked against the MCP specification:
    or WebExtension backend.
 8. `display()` frames can stream as MCP progress for text/JSON. The final MCP
    result returns concise text `content` plus structured `stdout`, `stderr`,
-   `result`, `duration_ms`, `truncated`, `displays`, and `error`.
+   `result`, `duration_ms`, `truncated`, `displays`, `artifacts`,
+   `response_meta`, and `error`. Large image/content payloads are returned as
+   MCP resource links when they cross the inline budget.
 
 ## Canonical Agent Flow
 
@@ -45,25 +53,26 @@ const browser = await agent.browsers.get("chrome");
 const tab = await browser.tabs.create({ url: "http://127.0.0.1:8000/index.html" });
 await tab.attach();
 
-const heading = await tab.getByRole("heading", { name: /dashboard/i }).textContent();
-display({ heading });
+const snapshot = await tab.snapshotText();
+display({ title: snapshot.title, headings: snapshot.headings.slice(0, 3) });
 
-const shot = await tab.screenshot({
-  type: "jpeg",
-  quality: 60,
-  fullPage: false,
+const shot = await tab.screenshotForModel({
   clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 }
 });
-display({ __obuImage: true, mime_type: shot.mime_type, data: shot.data_base64 });
+await browser.finishTurn();
+({ snapshot, shot });
 ```
 
 Use this order when possible:
 
-1. Inspect state with locators, `textContent()`, `count()`, `readAll()`, URL, and
+1. Call `browser_status` before the first `js` cell when setup readiness is
+   uncertain.
+2. Inspect state with locators, `textContent()`, `count()`, `readAll()`, URL, and
    title.
-2. Use a clipped/compressed screenshot only when visual inspection is needed.
-3. Use `tab.dev.cdp(...)` for missing Playwright APIs such as page evaluation.
-4. Return small summaries as the last expression; send progress with small
+3. Use a clipped/compressed screenshot only when visual inspection is needed.
+4. Use `tab.evaluate(...)` for bounded page evaluation; keep raw
+   `tab.dev.cdp(...)` as an escape hatch.
+5. Return small summaries as the last expression; send progress with small
    `display()` calls.
 
 ## Repeated Agent Mistakes to Avoid
@@ -73,14 +82,14 @@ Use this order when possible:
   `about:blank`.
 - WebExtension sessions cannot drive `file://` pages. Serve local files over
   HTTP, for example `python3 -m http.server 8000`.
-- There is no first-class `tab.evaluate()`. Use:
+- `tab.evaluate()` exists and defaults to a capped JSON result. Prefer it over
+  raw CDP evaluation:
 
   ```js
-  const result = await tab.dev.cdp("Runtime.evaluate", {
-    expression: "document.title",
-    returnByValue: true,
-    awaitPromise: true
-  });
+  const result = await tab.evaluate(() => ({
+    title: document.title,
+    buttons: document.querySelectorAll("button").length
+  }));
   ```
 
 - `process` and `node:process` are unavailable in the kernel. Use
@@ -93,36 +102,41 @@ Use this order when possible:
 
 ## Token Budget Hotspots
 
-Current large-payload sources:
+Large-payload sources:
 
 - `tab.screenshot()` and `tab.content.export({ format: "png" | "pdf" })`
-  return base64 inline.
+  return base64 at the SDK/host layer.
 - `tab.content.export({ format: "html" })` base64-encodes the full document.
-- `display({ __obuImage, data })` and `nodeRepl.emitImage(...)` store the image
-  payload in the final `displays` array. Images are not progress-streamed.
+- `display({ __obuImage, data })` and `nodeRepl.emitImage(...)` are captured as
+  image displays. The MCP server spills those image bytes to resources in the
+  final result.
 - Text and JSON `display()` frames can stream as progress, but they are also
   included in final `displays`.
 - `console.log`, `nodeRepl.write`, and the final expression all flow back in the
   final structured result.
-- `tab.dev.cdp("Runtime.evaluate", { returnByValue: true })` can return very
-  large objects if the expression serializes DOM, storage, or app state.
+- Raw `tab.dev.cdp("Runtime.evaluate", { returnByValue: true })` can return
+  very large objects if the expression serializes DOM, storage, or app state.
 - DOM snapshots and locator `readAll()` results can be large on dense pages.
 
 Use these defaults to keep results small:
 
 - Never `console.log` or return raw screenshot/base64/HTML/PDF payloads.
-- Do not write `display(await tab.screenshot())`; wrap the image explicitly as
-  `{ __obuImage: true, mime_type, data }`.
+- Prefer `tab.screenshotForModel()` over `tab.screenshot()` when the result is
+  for model inspection.
+- If using `display()` manually, do not write `display(await tab.screenshot())`;
+  wrap the image explicitly as `{ __obuImage: true, mime_type, data }`.
 - Prefer `type: "jpeg"`, `quality: 50..70`, `fullPage: false`, and a `clip`
   with `scale < 1` for screenshots.
 - Return counts, selected text, dimensions, short arrays, or explicit summaries
   instead of whole documents or page state.
-- When using CDP evaluation, project to a small shape in the page expression.
+- Use `tab.snapshotText()` for compact page state and `tab.evaluate()` for
+  bounded page expressions.
 
-Known implementation gaps that still deserve follow-up:
+Current protections:
 
-- Large `stdout`, `result`, and `displays` are not truncated or spilled to MCP
-  resources yet.
-- Image displays still inline data in the final result instead of returning a
-  resource link.
-- HTML/PDF/content exports do not have a resource-backed path yet.
+- MCP `js` results cap `stdout`, `stderr`, final `result`, and `displays`, and
+  set field-level `truncated` flags.
+- Image displays and oversized base64 payloads with MIME metadata are spilled to
+  `obu-artifact://...` MCP resources.
+- Clients that do not fetch resources still receive a structured summary with
+  URI, MIME type, byte count, and truncation flags.
