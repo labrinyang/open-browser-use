@@ -39,6 +39,12 @@ jobs:
       - name: JS tests
         run: pnpm -r test
 
+      - name: WebExtension takeover browser smoke
+        env:
+          OBU_WEBEXT_E2E_AUTO_INSTALL: "1"
+          OBU_WEBEXT_E2E_HEADLESS: "1"
+        run: pnpm -C packages/extension test:browser
+
       - name: Build JS artifacts
         run: pnpm -r build
 

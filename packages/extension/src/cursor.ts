@@ -62,7 +62,6 @@ const INPUT_BYPASS_MAX_MS = 1_000;
 const REDUCED_MOTION = matchMediaSafe("(prefers-reduced-motion: reduce)");
 const INSTALL_KEY = "__OBU_CURSOR_CONTENT_SCRIPT_INSTALLED__";
 const SCRIPT_EVENT = "__OBU_CURSOR_MESSAGE__";
-const RELAY_MARKER = "__OBU_CURSOR_RELAY__";
 const TOP_FRAME = isTopFrame();
 const LOCK_EVENTS = [
   "pointerdown",
@@ -118,18 +117,10 @@ if (!installState[INSTALL_KEY]) {
   windowTarget()?.addEventListener(SCRIPT_EVENT, (event) => {
     handleCursorMessage((event as CustomEvent).detail);
   });
-  windowTarget()?.addEventListener("message", (event) => {
-    if (TOP_FRAME) return;
-    if (event.source !== windowTarget()?.parent) return;
-    const data = event.data;
-    if (!isRecord(data) || data[RELAY_MARKER] !== true) return;
-    handleCursorMessage(data.message);
-  });
 }
 
 function handleCursorMessage(message: unknown, sendResponse?: (response?: unknown) => void): void {
   if (!isCursorMessage(message)) return;
-  relayCursorMessage(message);
   if (message.type === "OBU_CONTENT_PING") {
     sendResponse?.({ ok: true });
     return;
@@ -156,23 +147,6 @@ function handleCursorMessage(message: unknown, sendResponse?: (response?: unknow
   }
   moveCursor(message);
   sendResponse?.({ ok: true, sequence: message.sequence });
-}
-
-function relayCursorMessage(message: CursorMessage): void {
-  if (message.type === "OBU_CONTENT_PING") return;
-  if (typeof document.querySelectorAll !== "function") return;
-  const frames = document.querySelectorAll("iframe,frame");
-  for (const frame of frames) {
-    try {
-      (frame as HTMLIFrameElement | HTMLFrameElement).contentWindow?.postMessage({
-        [RELAY_MARKER]: true,
-        message,
-      }, "*");
-    } catch {
-      // Cross-origin or detached frames can reject access; the local frame lock
-      // remains active and other reachable child frames should still receive it.
-    }
-  }
 }
 
 function setTakeoverState(message: TakeoverStateMessage): void {
