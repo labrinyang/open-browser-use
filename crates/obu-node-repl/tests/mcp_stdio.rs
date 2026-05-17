@@ -77,6 +77,8 @@ async fn mcp_stdio_lists_tools_and_executes_js() {
     let mut reader = BufReader::new(stdout).lines();
     let init = read_json(&mut reader).await;
     assert_eq!(init["id"], 1);
+    assert!(init["result"]["capabilities"]["tools"].is_object());
+    assert!(init["result"]["capabilities"]["resources"].is_object());
 
     let tools = read_json(&mut reader).await;
     assert_eq!(tools["id"], 2);
@@ -86,7 +88,10 @@ async fn mcp_stdio_lists_tools_and_executes_js() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(names, ["js", "js_reset", "js_add_module_dir"]);
+    assert_eq!(
+        names,
+        ["js", "browser_status", "js_reset", "js_add_module_dir"]
+    );
     let js_tool = tools["result"]["tools"]
         .as_array()
         .unwrap()
@@ -156,6 +161,101 @@ async fn mcp_stdio_lists_tools_and_executes_js() {
     assert_eq!(
         failed_exec["result"]["content"][0]["text"],
         "JavaScript execution failed: mcp boom"
+    );
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "browser_status",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+    let status = read_json(&mut reader).await;
+    assert_eq!(status["id"], 5);
+    assert!(status["result"]["structuredContent"]["sdk_bootstrap"].is_string());
+    assert!(status["result"]["structuredContent"]["backends"].is_array());
+    assert!(
+        status["result"]["structuredContent"]["doctor_hint"]
+            .as_str()
+            .unwrap()
+            .starts_with("obu doctor browser")
+    );
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "js",
+                "arguments": {
+                    "source": "display({ __obuImage: true, mime_type: 'image/png', data: 'iVBORw0KGgo=' }); 'ok'"
+                }
+            }
+        }),
+    )
+    .await;
+    let image_exec = read_json(&mut reader).await;
+    assert_eq!(image_exec["id"], 6);
+    let artifact_uri = image_exec["result"]["structuredContent"]["displays"][0]["value"]["uri"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(artifact_uri.starts_with("obu-artifact://artifact-"));
+    assert_eq!(image_exec["result"]["content"][1]["type"], "resource_link");
+    assert!(image_exec.to_string().contains("iVBORw0KGgo=") == false);
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "resources/read",
+            "params": {
+                "uri": artifact_uri
+            }
+        }),
+    )
+    .await;
+    let resource = read_json(&mut reader).await;
+    assert_eq!(resource["id"], 7);
+    assert_eq!(resource["result"]["contents"][0]["mimeType"], "image/png");
+    assert_eq!(resource["result"]["contents"][0]["blob"], "iVBORw0KGgo=");
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": "js",
+                "arguments": {
+                    "source": "console.log('x'.repeat(10000000)); 'small'"
+                }
+            }
+        }),
+    )
+    .await;
+    let huge = read_json(&mut reader).await;
+    assert_eq!(huge["id"], 8);
+    assert_eq!(
+        huge["result"]["structuredContent"]["truncated"]["stdout"],
+        true
+    );
+    assert!(
+        huge["result"]["structuredContent"]["stdout"]
+            .as_str()
+            .unwrap()
+            .len()
+            < 100000
     );
 
     drop(stdin);

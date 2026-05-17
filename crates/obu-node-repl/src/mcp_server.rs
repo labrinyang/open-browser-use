@@ -11,16 +11,19 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use anyhow::{Context, Result};
 use rmcp::model::{
     CallToolRequestMethod, CallToolRequestParams, CallToolResult, Content, ErrorData,
-    Implementation, ListToolsResult, Meta, PaginatedRequestParams, ProgressNotificationParam,
-    ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    Implementation, ListResourcesResult, ListToolsResult, Meta, PaginatedRequestParams,
+    ProgressNotificationParam, ReadResourceRequestParams, ReadResourceResult, ServerCapabilities,
+    ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ServerHandler, ServiceExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::artifact_store::ArtifactStore;
 use crate::cli::Cli;
 use crate::repl_manager::{JsRuntimeManager, ManagerOptions};
+use crate::result_budget::prepare_js_result;
 
 /// Long-form `js` tool description.
 pub const JS_TOOL_DESCRIPTION: &str = include_str!("../resources/js_tool_description.md");
@@ -47,7 +50,7 @@ static JS_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
 static JS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
     Arc::new(schema_object(json!({
         "type": "object",
-        "required": ["stdout", "stderr", "result", "duration_ms", "truncated", "displays", "error"],
+        "required": ["stdout", "stderr", "result", "duration_ms", "truncated", "displays", "artifacts", "response_meta", "error"],
         "properties": {
             "stdout": {
                 "type": "string",
@@ -66,18 +69,15 @@ static JS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(
                 "description": "Kernel-measured execution duration."
             },
             "truncated": {
-                "anyOf": [
-                    { "type": "null" },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "stdout": { "type": "boolean" },
-                            "stderr": { "type": "boolean" }
-                        },
-                        "required": ["stdout", "stderr"],
-                        "additionalProperties": false
-                    }
-                ]
+                "type": "object",
+                "properties": {
+                    "stdout": { "type": "boolean" },
+                    "stderr": { "type": "boolean" },
+                    "result": { "type": "boolean" },
+                    "displays": { "type": "boolean" }
+                },
+                "required": ["stdout", "stderr", "result", "displays"],
+                "additionalProperties": false
             },
             "displays": {
                 "type": "array",
@@ -92,12 +92,59 @@ static JS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(
                     "additionalProperties": false
                 }
             },
+            "artifacts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["kind", "uri", "mime_type", "bytes", "summary"],
+                    "properties": {
+                        "kind": { "type": "string", "enum": ["resource"] },
+                        "uri": { "type": "string" },
+                        "mime_type": { "type": ["string", "null"] },
+                        "bytes": { "type": ["integer", "null"], "minimum": 0 },
+                        "summary": { "type": ["string", "null"] }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "response_meta": {
+                "description": "Kernel-provided MCP response metadata from nodeRepl.setResponseMeta(), or null."
+            },
             "error": {
                 "anyOf": [
                     { "type": "null" },
                     { "type": "string" }
                 ],
                 "description": "User-code JavaScript error, when execution failed inside the kernel."
+            }
+        },
+        "additionalProperties": false
+    })))
+});
+
+static BROWSER_STATUS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
+    Arc::new(schema_object(json!({
+        "type": "object",
+        "required": ["sdk_bootstrap", "backends", "diagnostics", "runtime_dir", "doctor_hint"],
+        "properties": {
+            "sdk_bootstrap": {
+                "type": "string",
+                "enum": ["available", "missing", "untrusted"]
+            },
+            "sdk_bootstrap_detail": {
+                "type": "object"
+            },
+            "backends": {
+                "type": "array"
+            },
+            "diagnostics": {
+                "type": "array"
+            },
+            "runtime_dir": {
+                "type": "string"
+            },
+            "doctor_hint": {
+                "type": "string"
             }
         },
         "additionalProperties": false
@@ -161,12 +208,14 @@ pub struct JsAddModuleDirArgs {
 /// MCP server implementation.
 pub struct ObuServer {
     runtime: Arc<JsRuntimeManager>,
+    artifacts: ArtifactStore,
 }
 
 impl ObuServer {
     /// Construct a server around a runtime manager.
-    pub fn new(runtime: Arc<JsRuntimeManager>) -> Self {
-        Self { runtime }
+    pub fn new(runtime: Arc<JsRuntimeManager>) -> Result<Self> {
+        let artifacts = ArtifactStore::new(runtime.session_id())?;
+        Ok(Self { runtime, artifacts })
     }
 
     fn tools() -> Vec<Tool> {
@@ -181,6 +230,20 @@ impl ObuServer {
                         .idempotent(false)
                         .open_world(true),
                 ),
+            Tool::new(
+                "browser_status",
+                "Report browser-use readiness, SDK bootstrap status, discovered backends, and repair hints without executing JavaScript.",
+                EMPTY_SCHEMA.clone(),
+            )
+            .with_title("Browser Status")
+            .with_raw_output_schema(BROWSER_STATUS_OUTPUT_SCHEMA.clone())
+            .with_annotations(
+                ToolAnnotations::new()
+                    .read_only(true)
+                    .destructive(false)
+                    .idempotent(true)
+                    .open_world(false),
+            ),
             Tool::new(
                 "js_reset",
                 "Reset the persistent Node REPL kernel and clear JavaScript state.",
@@ -215,8 +278,13 @@ impl ObuServer {
 
 impl ServerHandler for ObuServer {
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("Run JavaScript in the open-browser-use Node REPL.");
+        let mut info = ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_instructions("Run JavaScript in the open-browser-use Node REPL.");
         info.server_info = Implementation::new("obu-node-repl", env!("CARGO_PKG_VERSION"));
         info
     }
@@ -243,10 +311,35 @@ impl ServerHandler for ObuServer {
         let meta = _context.meta.clone();
         match name.as_ref() {
             "js" => self.call_js(arguments, meta, _context).await,
+            "browser_status" => self.call_browser_status(arguments).await,
             "js_reset" => self.call_js_reset(arguments).await,
             "js_add_module_dir" => self.call_js_add_module_dir(arguments).await,
             _ => Err(ErrorData::method_not_found::<CallToolRequestMethod>()),
         }
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> std::result::Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(
+            self.artifacts.list_resources(),
+        ))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> std::result::Result<ReadResourceResult, ErrorData> {
+        let contents = self
+            .artifacts
+            .read_resource(&request.uri)
+            .map_err(|error| {
+                ErrorData::invalid_params(format!("resource unavailable: {error}"), None)
+            })?;
+        Ok(ReadResourceResult::new(vec![contents]))
     }
 }
 
@@ -297,27 +390,38 @@ impl ObuServer {
             }
         }
         let result = result.map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let error = result.error.clone();
-        let structured = json!({
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "result": result.result,
-            "duration_ms": result.duration_ms,
-            "truncated": result.truncated,
-            "displays": result.displays,
-            "error": error,
-        });
-        if result.error.is_some() {
-            Ok(structured_error_result(structured))
+        let prepared = prepare_js_result(result, &self.artifacts)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        if prepared.error.is_some() {
+            Ok(structured_error_result(
+                prepared.structured,
+                prepared.content_links,
+                prepared.response_meta,
+            ))
         } else {
             Ok(structured_result(
-                structured,
-                format!(
-                    "JavaScript execution completed in {}ms.",
-                    result.duration_ms
-                ),
+                prepared.structured,
+                prepared.text_summary,
+                prepared.content_links,
+                prepared.response_meta,
             ))
         }
+    }
+
+    async fn call_browser_status(
+        &self,
+        arguments: Option<rmcp::model::JsonObject>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        let _args: JsResetArgs = decode_args(arguments)?;
+        let status = self.runtime.browser_status().map_err(|error| {
+            ErrorData::internal_error(format!("failed to compute browser status: {error}"), None)
+        })?;
+        Ok(structured_result(
+            status,
+            "Browser status computed.",
+            Vec::new(),
+            None,
+        ))
     }
 
     async fn call_js_reset(
@@ -329,7 +433,12 @@ impl ObuServer {
             .reset()
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        Ok(structured_result(json!({ "ok": true }), "OK"))
+        Ok(structured_result(
+            json!({ "ok": true }),
+            "OK",
+            Vec::new(),
+            None,
+        ))
     }
 
     async fn call_js_add_module_dir(
@@ -342,7 +451,12 @@ impl ObuServer {
             return Err(ErrorData::invalid_params("path must be absolute", None));
         }
         self.runtime.add_module_dir(path);
-        Ok(structured_result(json!({ "ok": true }), "OK"))
+        Ok(structured_result(
+            json!({ "ok": true }),
+            "OK",
+            Vec::new(),
+            None,
+        ))
     }
 }
 
@@ -352,7 +466,7 @@ pub async fn run_stdio_server_with_options(cli: Cli) -> Result<()> {
     let manager = Arc::new(JsRuntimeManager::new(options).await?);
     manager.boot().await?;
 
-    let server = ObuServer::new(manager);
+    let server = ObuServer::new(manager)?;
     let serve = server
         .serve((tokio::io::stdin(), tokio::io::stdout()))
         .await
@@ -388,22 +502,44 @@ fn schema_object(value: Value) -> rmcp::model::JsonObject {
     }
 }
 
-fn structured_result(value: Value, summary: impl Into<String>) -> CallToolResult {
-    let mut result = CallToolResult::success(vec![Content::text(summary.into())]);
+fn structured_result(
+    value: Value,
+    summary: impl Into<String>,
+    mut links: Vec<Content>,
+    response_meta: Option<Value>,
+) -> CallToolResult {
+    let mut content = vec![Content::text(summary.into())];
+    content.append(&mut links);
+    let mut result = CallToolResult::success(content);
     result.structured_content = Some(value);
+    result.meta = response_meta.and_then(value_to_meta);
     result
 }
 
-fn structured_error_result(value: Value) -> CallToolResult {
+fn structured_error_result(
+    value: Value,
+    mut links: Vec<Content>,
+    response_meta: Option<Value>,
+) -> CallToolResult {
     let message = value
         .get("error")
         .and_then(Value::as_str)
         .unwrap_or("JavaScript execution failed");
-    let mut result = CallToolResult::error(vec![Content::text(format!(
+    let mut content = vec![Content::text(format!(
         "JavaScript execution failed: {message}"
-    ))]);
+    ))];
+    content.append(&mut links);
+    let mut result = CallToolResult::error(content);
     result.structured_content = Some(value);
+    result.meta = response_meta.and_then(value_to_meta);
     result
+}
+
+fn value_to_meta(value: Value) -> Option<Meta> {
+    match value {
+        Value::Object(map) => Some(Meta(map)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -416,6 +552,9 @@ mod tests {
             .into_iter()
             .map(|tool| tool.name.into_owned())
             .collect::<Vec<_>>();
-        assert_eq!(names, ["js", "js_reset", "js_add_module_dir"]);
+        assert_eq!(
+            names,
+            ["js", "browser_status", "js_reset", "js_add_module_dir"]
+        );
     }
 }

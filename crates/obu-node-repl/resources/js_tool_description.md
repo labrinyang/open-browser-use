@@ -36,7 +36,12 @@ The structured result contains:
 - `stderr` — reserved for future split capture; currently empty.
 - `result` — the JSON-serializable value of the last expression, or `null`.
 - `duration_ms` — kernel-measured execution time.
+- `truncated` — field-level budget flags for `stdout`, `stderr`, `result`, and
+  `displays`.
 - `displays` — values emitted by `display(value)`.
+- `artifacts` — MCP resource summaries for large payloads spilled out of the
+  structured result.
+- `response_meta` — metadata set with `nodeRepl.setResponseMeta(value)`.
 - `error` — JavaScript user-code error message when the cell fails, otherwise
   `null`. JavaScript errors are tool results with `isError: true`; invalid MCP
   arguments, timeouts, and kernel transport failures are protocol errors.
@@ -49,8 +54,8 @@ The MCP text `content` is only a short status summary. Read
 - `display(value)` — show progress. Strings and JSON-compatible values stream
   live via MCP `notifications/progress` when the client provides a progress
   token, and are also returned in `displays`. Image payloads shaped as
-  `{ __obuImage: true, mime_type, data }` are not streamed; they only appear in
-  the final `displays` array.
+  `{ __obuImage: true, mime_type, data }` are not streamed, and the final result
+  stores them as MCP resource links instead of inline base64.
 - `nodeRepl.cwd` — current working directory.
 - `nodeRepl.homeDir` — user home directory, when available.
 - `nodeRepl.tmpDir` — scratch directory.
@@ -72,13 +77,12 @@ The MCP text `content` is only a short status summary. Read
 
 ## Token budget
 
-Keep `stdout`, final expression values, and `display()` payloads small. Do not
-return raw screenshot, HTML, PDF, or base64 values as the final expression and do
-not `console.log` them. For screenshots, prefer clipped/compressed JPEG output:
-`{ type: "jpeg", quality: 50..70, fullPage: false, clip: { ..., scale: 0.5 } }`.
-Use `display({ __obuImage: true, mime_type, data })` only after reducing the
-image payload. Text/JSON `display()` frames can stream as progress, but they are
-also included in the final result.
+Keep `stdout`, final expression values, and `display()` payloads small. The MCP
+server caps large text/JSON fields and spills image-like base64 payloads to
+resources, but concise summaries are still the best path. Prefer
+`tab.snapshotText()`, `tab.evaluate(...)`, and `tab.screenshotForModel(...)`
+over raw CDP evaluation or raw screenshot returns. Text/JSON `display()` frames
+can stream as progress, but they are also included in the final result.
 
 ## Examples
 
@@ -87,8 +91,7 @@ const browser = await agent.browsers.get("cdp");
 const tab = await browser.tabs.create("https://example.com");
 await tab.attach();
 await tab.locator("h1").click();
-const shot = await tab.screenshot({ type: "jpeg", quality: 60, clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } });
-display({ __obuImage: true, mime_type: shot.mime_type, data: shot.data_base64 });
+await tab.screenshotForModel({ clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } });
 ```
 
 ```js

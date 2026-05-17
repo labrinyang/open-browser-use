@@ -47,6 +47,47 @@ async fn obu_repl_discovers_parent_seeded_backends() {
 }
 
 #[tokio::test]
+async fn browser_status_reports_missing_sdk_and_no_backend() {
+    let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+        .await
+        .unwrap();
+
+    let status = manager.browser_status().unwrap();
+
+    assert_eq!(status["sdk_bootstrap"], json!("missing"));
+    assert_eq!(status["backends"], json!([]));
+    assert_eq!(status["doctor_hint"], json!("obu doctor browser --repair"));
+}
+
+#[tokio::test]
+async fn browser_status_reports_untrusted_sdk_without_backend_secrets() {
+    let mut options = ManagerOptions::for_tests();
+    options.module_dirs.push(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("sdk-good"),
+    );
+    options.backends.push(DiscoveredBackend {
+        kind: "webextension".to_string(),
+        name: "chrome".to_string(),
+        socket_path: "/tmp/obu/test.sock".to_string(),
+        metadata: Some(json!({ "safe": true })),
+    });
+    options.backend_auth_tokens.insert(
+        std::path::PathBuf::from("/tmp/obu/test.sock"),
+        "secret".to_string(),
+    );
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+
+    let status = manager.browser_status().unwrap();
+
+    assert_eq!(status["sdk_bootstrap"], json!("untrusted"));
+    assert_eq!(status["backends"][0]["type"], json!("webextension"));
+    assert!(status.to_string().contains("secret") == false);
+}
+
+#[tokio::test]
 async fn exec_frames_include_obu_turn_metadata() {
     let mut options = ManagerOptions::for_tests();
     options.session_id = "obu-session-for-metadata-test".into();

@@ -207,6 +207,33 @@ impl JsRuntimeManager {
         })
     }
 
+    /// Session identifier for this MCP/kernel session.
+    pub fn session_id(&self) -> &str {
+        &self.options.session_id
+    }
+
+    /// Read-only browser-use readiness status for MCP clients.
+    pub fn browser_status(&self) -> Result<Value> {
+        if self.options.dynamic_backend_discovery {
+            self.refresh_backend_inventory();
+        }
+        let inventory = self.backend_inventory();
+        let (sdk_bootstrap, sdk_bootstrap_detail) = self.sdk_bootstrap_status();
+        let doctor_hint = if inventory.backends.is_empty() {
+            "obu doctor browser --repair"
+        } else {
+            "obu doctor browser"
+        };
+        Ok(json!({
+            "sdk_bootstrap": sdk_bootstrap,
+            "sdk_bootstrap_detail": sdk_bootstrap_detail,
+            "backends": inventory.backends,
+            "diagnostics": inventory.diagnostics,
+            "runtime_dir": runtime_dir().to_string_lossy(),
+            "doctor_hint": doctor_hint,
+        }))
+    }
+
     /// Spawn the Node child if it is not already ready.
     pub async fn boot(&self) -> Result<()> {
         {
@@ -472,8 +499,12 @@ impl JsRuntimeManager {
                 .get("duration_ms")
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
-            truncated: None,
+            truncated: TruncationInfo::default(),
             displays,
+            response_meta: frame
+                .get("response_meta")
+                .filter(|value| !value.is_null())
+                .cloned(),
             error,
         })
     }
@@ -498,6 +529,65 @@ impl JsRuntimeManager {
         let mut dirs = self.module_dirs.lock().expect("module dir lock");
         if !dirs.contains(&dir) {
             dirs.push(dir);
+        }
+    }
+
+    fn sdk_bootstrap_status(&self) -> (&'static str, Value) {
+        let candidates = sdk_candidate_roots(&self.options.working_dir, &self.options.module_dirs);
+        let searched = candidates
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let mut diagnostics = Vec::new();
+        for candidate in candidates {
+            if !candidate.join("package.json").exists() {
+                continue;
+            }
+            match crate::sdk_discovery::discover_at(&candidate) {
+                Ok(info) => {
+                    let trusted_by_path = self
+                        .options
+                        .trusted_code_paths
+                        .iter()
+                        .any(|trusted| is_same_or_within_dir(&info.dir, trusted));
+                    let trusted_by_hash = self.options.trusted_module_sha256s.contains(&info.hash);
+                    let trusted = self.options.trust_all || trusted_by_path || trusted_by_hash;
+                    let detail = json!({
+                        "status": if trusted { "available" } else { "untrusted" },
+                        "path": info.dir.to_string_lossy(),
+                        "version": info.version,
+                        "trusted_by": {
+                            "trust_all": self.options.trust_all,
+                            "path": trusted_by_path,
+                            "hash": trusted_by_hash,
+                        },
+                        "searched": searched,
+                    });
+                    return (if trusted { "available" } else { "untrusted" }, detail);
+                }
+                Err(error) => diagnostics.push(json!({
+                    "path": candidate.to_string_lossy(),
+                    "reason": error.to_string(),
+                })),
+            }
+        }
+        if diagnostics.is_empty() {
+            (
+                "missing",
+                json!({
+                    "status": "missing",
+                    "searched": searched,
+                }),
+            )
+        } else {
+            (
+                "untrusted",
+                json!({
+                    "status": "untrusted",
+                    "searched": searched,
+                    "diagnostics": diagnostics,
+                }),
+            )
         }
     }
 
@@ -1168,6 +1258,51 @@ fn probe_runtime_descriptor(_socket: &Path, _token: &str, _descriptor: &Value) -
 
 fn runtime_dir() -> PathBuf {
     resolve_runtime_dir()
+}
+
+fn sdk_candidate_roots(working_dir: &Path, module_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    push_unique(
+        &mut candidates,
+        working_dir
+            .join("node_modules")
+            .join("@open-browser-use")
+            .join("sdk"),
+    );
+    for module_dir in module_dirs {
+        if module_dir.file_name().and_then(|name| name.to_str()) == Some("node_modules") {
+            push_unique(
+                &mut candidates,
+                module_dir.join("@open-browser-use").join("sdk"),
+            );
+        } else {
+            push_unique(
+                &mut candidates,
+                module_dir
+                    .join("node_modules")
+                    .join("@open-browser-use")
+                    .join("sdk"),
+            );
+            push_unique(&mut candidates, module_dir.clone());
+        }
+    }
+    candidates
+}
+
+fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.contains(&path) {
+        paths.push(path);
+    }
+}
+
+fn is_same_or_within_dir(candidate: &Path, directory: &Path) -> bool {
+    let candidate = canonicalize_lossy(candidate);
+    let directory = canonicalize_lossy(directory);
+    candidate == directory || candidate.starts_with(directory)
+}
+
+fn canonicalize_lossy(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn seed_sdk_trust(

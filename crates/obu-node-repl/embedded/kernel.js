@@ -2320,6 +2320,7 @@ async function handleExec(message) {
       result: null,
       duration_ms: Math.round(performance.now() - execState.startedAt),
       error: error && error.message ? error.message : String(error),
+      response_meta: currentResponseMeta,
     });
   } finally {
     if (activeExecId === execId) {
